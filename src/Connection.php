@@ -17,6 +17,11 @@ class Connection
     public $server;
 
     /**
+     * @var $web
+     */
+    public $web;
+
+    /**
      * Connection constructor.
      *
      * @param string $server
@@ -25,8 +30,9 @@ class Connection
      *
      * @return Connection
      */
-    public function __construct($server)
+    public function __construct($server, $web = false)
     {
+        $this->web = $web;
         if (!isset($server['scheme'])) {
             throw new \Exception("Please provide a connection protocol such as 'ftp' or 'sftp'.");
         }
@@ -85,10 +91,13 @@ class Connection
               : true;
             $options['ssl'] = ($server['ssl'] ?: false);
             $options['port'] = ($server['port'] ?: 21);
-
             return new Filesystem(new FtpAdapter($options));
         } catch (\Exception $e) {
-            echo "\r\nOh Snap: {$e->getMessage()}\r\n";
+          if ($this->$web) {
+            $this->addMessage($e->getMessage(), "", "error", "true");
+          } else {
+            //echo "\r\nOh Snap: {$e->getMessage()}\r\n";
+          }
         }
     }
 
@@ -118,7 +127,11 @@ class Connection
 
             return new Filesystem(new SftpAdapter($options));
         } catch (\Exception $e) {
-            echo "\r\nOh Snap: {$e->getMessage()}\r\n";
+          if ($this->$web) {
+            $this->addMessage($e->getMessage(), "", "error", "true");
+          } else {
+            //echo "\r\nOh Snap: {$e->getMessage()}\r\n";
+          }
         }
     }
 }

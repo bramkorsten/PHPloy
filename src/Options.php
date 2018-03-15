@@ -71,6 +71,12 @@ class Options
                 'description' => 'Creates directory to the deployment path if it does not exist',
                 'noValue' => true,
             ],
+            'web' => [
+                'prefix' => 'w',
+                'longPrefix' => 'web',
+                'description' => 'Dumps the output in json format at the end of the script',
+                'noValue' => true,
+            ],
             'fresh' => [
                 'longPrefix' => 'fresh',
                 'description' => 'Deploys all files even if some already exist on server. Ignores server revision.',

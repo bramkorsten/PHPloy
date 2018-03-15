@@ -251,6 +251,27 @@ class PHPloy
     protected $force = false;
 
     /**
+     * Whether the --web command line option was given.
+     *
+     * @var bool web
+     */
+    protected $web = false;
+
+    /**
+     * Keep track of cli output in an array.
+     *
+     * @var array jsonArray
+     */
+    public $jsonArray = [];
+
+    /**
+     * Keep track of message index
+     *
+     * @var int messageCount
+     */
+    public $messageCount = 0;
+
+    /**
      * Whether the --fresh command line option was given.
      *
      * @var bool init
@@ -265,9 +286,16 @@ class PHPloy
         $this->opt = new \Banago\PHPloy\Options(new \League\CLImate\CLImate());
         $this->cli = $this->opt->cli;
 
-        $this->cli->backgroundGreen()->bold()->out('-------------------------------------------------');
-        $this->cli->backgroundGreen()->bold()->out('|                     PHPloy                    |');
-        $this->cli->backgroundGreen()->bold()->out('-------------------------------------------------');
+        if ($this->cli->arguments->defined('web')) {
+          $this->web = true;
+        }
+
+        if ($this->web) {
+          $this->jsonArray['deployment']['scriptVersion'] = $this->version;
+          $this->addMessage("PHPloy version " . $this->version . ". Starting Deployment with --web flag.");
+        } else {
+          $this->cli->backgroundGreen()->bold()->out('PHPloy v'.$this->version . '\nStarting Deployment');
+        }
 
         // Setup PHPloy
         $this->setup();
@@ -300,7 +328,7 @@ class PHPloy
             return;
         }
 
-        if (file_exists("$this->repo/.git")) {
+        if (file_exists("$this->repo/repo/.git")) {
             $this->git = new \Banago\PHPloy\Git($this->repo);
             $this->deploy();
         } else {
@@ -419,6 +447,34 @@ class PHPloy
     }
 
     /**
+     * Add a message to the JSON array.
+     *
+     * @param string $message, string file, string type, bool breaking
+     *
+     * @return array
+     */
+    public function addMessage($message, $file = "", $type = "verbose", $breaking = "false")
+    {
+
+      $this->jsonArray['deployment']['results']['messages'][$this->messageCount]['file'] = $file;
+      $this->jsonArray['deployment']['results']['messages'][$this->messageCount]['type'] = $type;
+      $this->jsonArray['deployment']['results']['messages'][$this->messageCount]['breaking'] = $breaking;
+      $this->jsonArray['deployment']['results']['messages'][$this->messageCount]['message'] = $message;
+      $this->messageCount++;
+    }
+
+    /**
+     * Finalize and encode the JSON array.
+     *
+     * @return string JSON array
+     */
+    public function finalizeJSON()
+    {
+      //print_r(json_encode($this->jsonArray));
+      print_r($this->jsonArray);
+    }
+
+    /**
      * Reads the phploy.ini file and populates the $this->servers array.
      */
     public function prepareServers()
@@ -498,9 +554,14 @@ class PHPloy
                 } elseif (!empty(getenv('PHPLOY_PASS'))) {
                     $options['pass'] = getenv('PHPLOY_PASS');
                 } else {
+                  if ($this->web) {
+                    $this->addMessage('No password provided for user "'.$options['user'].'". Trying to continue...', '', 'warning', 'false');
+                    $options['pass'] = '';
+                  } else {
                     fwrite(STDOUT, 'No password has been provided for user "'.$options['user'].'". Please enter a password: ');
                     $options['pass'] = input_password();
                     $this->cli->lightGreen()->out("\r\n".'Password received. Continuing deployment ...');
+                  }
                 }
             }
 
@@ -648,7 +709,7 @@ class PHPloy
      */
     public function connect($server)
     {
-        $connection = new Connection($server);
+        $connection = new Connection($server, $this->web);
         $this->connection = $connection->server;
     }
 
@@ -657,8 +718,14 @@ class PHPloy
      */
     public function deploy()
     {
+        $this->jsonArray['deployment']['type'] = "default";
         if ($this->listFiles) {
+          if ($this->web) {
+            $this->addMessage('LIST mode: No remote files will be modified.');
+            $this->jsonArray['deployment']['type'] = "list";
+          } else {
             $this->cli->lightYellow('LIST mode: No remote files will be modified.');
+          }
         }
 
         $this->checkSubmodules($this->repo);
@@ -687,7 +754,12 @@ class PHPloy
             }
 
             if ($this->force) {
+              if ($this->web) {
+                $this->jsonArray['deployment']['type'] = "forced";
+                $this->addMessage("Creating deployment directory: '".$server['path']."'.");
+              } else {
                 $this->cli->comment("Creating deployment directory: '".$server['path']."'.");
+              }
 
                 $path = $server['path'];
                 $server['path'] = '/';
@@ -695,7 +767,11 @@ class PHPloy
                 $this->connect($server);
 
                 $this->connection->createDir($path);
-                $this->cli->green('Deployment directory created. Ready to deploy.');
+                if ($this->web) {
+                  $this->addMessage('Deployment directory created. Ready to deploy.');
+                } else {
+                  $this->cli->green('Deployment directory created. Ready to deploy.');
+                }
 
                 $this->connection = null;
                 $server['path'] = $path;
@@ -711,7 +787,12 @@ class PHPloy
 
             $files = $this->compare($this->revision);
 
-            $this->cli->bold()->white()->out("\r\nSERVER: ".$name);
+            if ($this->web) {
+              $this->addMessage("SERVER: ".$name);
+              $this->jsonArray['deployment']['branch'] = $name;
+            } else {
+              $this->cli->bold()->white()->out("\r\nSERVER: ".$name);
+            }
 
             if ($this->listFiles) {
                 $this->listFiles($files[$this->currentServerName]);
@@ -765,8 +846,14 @@ class PHPloy
 
             // Done
             if (!$this->listFiles) {
+              if ($this->web) {
+                $this->jsonArray['deployment']['deploymentSize'] = human_filesize($this->deploymentSize);
+                $this->addMessage(human_filesize($this->deploymentSize).' Deployed');
+                $this->finalizeJSON();
+              } else {
                 $this->cli->bold()->lightGreen("\r\n|---------------[ ".human_filesize($this->deploymentSize).' Deployed ]---------------|');
-                $this->deploymentSize = 0;
+              }
+              $this->deploymentSize = 0;
             }
         }
     }
@@ -779,22 +866,42 @@ class PHPloy
     public function listFiles($files)
     {
         if (count($files['upload']) == 0 && count($files['delete']) == 0) {
+          if ($this->web) {
+            $this->addMessage('   No files to upload.');
+          } else {
             $this->cli->out('   No files to upload.');
+          }
         }
 
         if (count($files['delete']) > 0) {
+          if ($this->web) {
+            $this->addMessage('   Files that will be deleted in next deployment:');
+          } else {
             $this->cli->shout('   Files that will be deleted in next deployment:');
+          }
 
             foreach ($files['delete'] as $file_to_delete) {
+              if ($this->web) {
+                $this->addMessage('      '.$file_to_delete);
+              } else {
                 $this->cli->out('      '.$file_to_delete);
+              }
             }
         }
 
         if (count($files['upload']) > 0) {
-            $this->cli->lightGreen('   Files that will be uploaded in next deployment:');
+          if ($this->web) {
+            $this->addMessage('   Files that will be uploaded in next deployment:');
+          } else {
+            $this->cli->shout('   Files that will be uploaded in next deployment:');
+          }
 
             foreach ($files['upload'] as $file_to_upload) {
+              if ($this->web) {
+                $this->addMessage('      '.$file_to_upload);
+              } else {
                 $this->cli->out('      '.$file_to_upload);
+              }
             }
         }
     }
@@ -826,7 +933,12 @@ class PHPloy
         }
 
         if ($this->fresh) {
+          if ($this->web) {
+            $this->addMessage('Manual fresh upload...');
+          } else {
             $this->cli->out('Manual fresh upload...');
+          }
+
         } elseif ($this->connection->has($this->dotRevision)) {
             $remoteRevision = $this->connection->read($this->dotRevision);
             $this->debug('Remote revision: <bold>'.$remoteRevision);
@@ -850,7 +962,12 @@ class PHPloy
             }
 
             if (isset($output[0])) {
+              if ($this->web) {
+                $this->addMessage($output[0]);
+              } else {
                 $this->cli->out($output[0]);
+              }
+
             }
         }
 
@@ -968,7 +1085,11 @@ class PHPloy
                         if (!isset($pathsThatExist[$path])) {
                             if (!$this->connection->has($path)) {
                                 $this->connection->createDir($path);
-                                $this->cli->out(" + Created directory '$path'.");
+                                if ($this->web) {
+                                  $this->addMessage(" + Created directory '$path'.");
+                                } else {
+                                  $this->cli->out(" + Created directory '$path'.");
+                                }
                                 $pathsThatExist[$path] = true;
                             } else {
                                 $pathsThatExist[$path] = true;
@@ -992,10 +1113,18 @@ class PHPloy
                 $uploaded = $this->connection->put($remoteFile, $data);
 
                 if (!$uploaded) {
+                  if ($this->web) {
+                    $this->addMessage(" ! Failed to upload {$file}.", $file, "Error", "false");
+                  } else {
                     $this->cli->error(" ! Failed to upload {$file}.");
+                  }
 
                     if (!$this->connection) {
+                      if ($this->web) {
+                        $this->addMessage(' * Connection lost, trying to reconnect...', "", "Warning", "false");
+                      } else {
                         $this->cli->info(' * Connection lost, trying to reconnect...');
+                      }
                         $this->connect($this->currentServerInfo);
                         $uploaded = $this->connection->put($remoteFile, $data);
                     }
@@ -1004,7 +1133,11 @@ class PHPloy
                 $this->deploymentSize += filesize($this->repo.'/'.($this->currentSubmoduleName ? str_replace($this->currentSubmoduleName.'/', '', $file) : $file));
                 $total = count($filesToUpload);
                 $fileNo = str_pad(++$fileNo, strlen($total), ' ', STR_PAD_LEFT);
-                $this->cli->lightGreen(" ^ $fileNo of $total <white>{$file}");
+                if ($this->web) {
+                  $this->addMessage(" ^ $fileNo of $total <white>{$file}", $file, "verbose", "false");
+                } else {
+                  $this->cli->lightGreen(" ^ $fileNo of $total <white>{$file}");
+                }
             }
         }
 
@@ -1018,9 +1151,18 @@ class PHPloy
                 $fileNo = str_pad(++$fileNo, strlen($numberOfFilesToDelete), ' ', STR_PAD_LEFT);
                 if ($this->connection->has($file)) {
                     $this->connection->delete($file);
-                    $this->cli->out("<red> × $fileNo of $numberOfFilesToDelete <white>{$file}");
+                    if ($this->web) {
+                      $this->addMessage(" × $fileNo of $numberOfFilesToDelete <white>{$file}", $file, "verbose", "false");
+                    } else {
+                      $this->cli->out("<red> × $fileNo of $numberOfFilesToDelete <white>{$file}");
+                    }
+
                 } else {
+                  if ($this->web) {
+                    $this->addMessage(" ! $fileNo of $numberOfFilesToDelete <white>{$file} not found", $file, "warning", "false");
+                  } else {
                     $this->cli->out("<red> ! $fileNo of $numberOfFilesToDelete <white>{$file} not found");
+                  }
                 }
             }
         }
@@ -1035,9 +1177,18 @@ class PHPloy
                 $dirNo = str_pad(++$dirNo, strlen($numberOfdirsToDelete), ' ', STR_PAD_LEFT);
                 if ($this->connection->has($dir)) {
                     $this->connection->deleteDir($dir);
-                    $this->cli->out("<red> × $dirNo of $numberOfdirsToDelete <white>{$dir}");
+                    if ($this->web) {
+                      $this->addMessage(" × $dirNo of $numberOfdirsToDelete <white>{$dir}", $dir, "verbose", "false");
+                    } else {
+                      $this->cli->out("<red> × $dirNo of $numberOfdirsToDelete <white>{$dir}");
+                    }
+
                 } else {
+                  if ($this->web) {
+                    $this->addMessage(" ! $dirNo of $numberOfdirsToDelete <white>{$dir} not found", $dir, "warning", "false");
+                  } else {
                     $this->cli->out("<red> ! $dirNo of $numberOfdirsToDelete <white>{$dir} not found");
+                  }
                 }
             }
         }
@@ -1052,7 +1203,11 @@ class PHPloy
                 $this->setRevision($localRevision);
             }
         } else {
+          if ($this->web) {
+            $this->addMessage('No files to upload or delete.');
+          } else {
             $this->cli->gray()->out('   No files to upload or delete.');
+          }
         }
 
         // If $this->revision is not HEAD, it means the rollback command was provided
@@ -1364,7 +1519,11 @@ class PHPloy
             $this->cli->blue()->out("Executing on remote server: <bold>{$command}");
             $command = "cd {$this->servers[$this->currentServerName]['path']}; {$command}";
             $output = $connection->exec($command);
-            $this->cli->lightBlue()->out("<bold>{$output}");
+            if ($this->web) {
+              $this->addMessage($output);
+            } else {
+              $this->cli->lightBlue()->out("<bold>{$output}");
+            }
         }
     }
 
@@ -1422,7 +1581,11 @@ class PHPloy
     public function debug($message)
     {
         if ($this->debug) {
+          if ($this->web) {
+            $this->addMessage("$message", "", "debug", "false");
+          } else {
             $this->cli->comment("$message");
+          }
         }
     }
 
